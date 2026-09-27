@@ -1,0 +1,125 @@
+{
+  "upstream": "npgsql/efcore.pg",
+  "number": 3698,
+  "status": "pushed",
+  "verification": "full",
+  "branch": "scout/efcore.pg-3698-byte-array-jsonb",
+  "base_sha": "930bd291f7d1667a4db4c346dbcdc3df9370a8a2",
+  "pushed": true,
+  "changed_files": [
+    "src/EFCore.PG/Storage/Internal/NpgsqlTypeMappingSource.cs",
+    "test/EFCore.PG.Tests/Storage/NpgsqlTypeMappingSourceTest.cs",
+    "test/EFCore.PG.FunctionalTests/Query/AdHocJsonQueryNpgsqlTest.cs"
+  ],
+  "diff_stats": "+96 -0",
+  "new_tests": [
+    "Npgsql.EntityFrameworkCore.PostgreSQL.Storage.NpgsqlTypeMappingSourceTest.Json_byte_array(storeType: \"jsonb\")",
+    "Npgsql.EntityFrameworkCore.PostgreSQL.Storage.NpgsqlTypeMappingSourceTest.Json_byte_array(storeType: \"json\")",
+    "Npgsql.EntityFrameworkCore.PostgreSQL.Storage.NpgsqlTypeMappingSourceTest.Json_byte_array_configured_as_primitive_collection",
+    "Microsoft.EntityFrameworkCore.Query.AdHocJsonQueryNpgsqlTest.Byte_array_mapped_to_json_column(storeType: \"jsonb\")",
+    "Microsoft.EntityFrameworkCore.Query.AdHocJsonQueryNpgsqlTest.Byte_array_mapped_to_json_column(storeType: \"json\")"
+  ],
+  "commands": [
+    {
+      "cmd": "dotnet build --configuration Release",
+      "result": "pass",
+      "output_tail": "Build succeeded.\n    0 Warning(s)\n    0 Error(s)"
+    },
+    {
+      "cmd": "dotnet test --project test/EFCore.PG.Tests -c Release --filter-method \"*Json_byte_array*\"   (before fix)",
+      "result": "fail",
+      "output_tail": "failed ...NpgsqlTypeMappingSourceTest.Json_byte_array(storeType: \"json\")\n  Assert.Same() Failure: Values are not the same instance\n  Expected: typeof(byte[])\n  Actual:   typeof(System.Collections.Generic.IEnumerable<byte>)\n  total: 2\n  failed: 2"
+    },
+    {
+      "cmd": "dotnet test --project test/EFCore.PG.FunctionalTests -c Release --filter-method \"*Byte_array_mapped_to_json_column*\"   (before fix)",
+      "result": "fail",
+      "output_tail": "failed ...AdHocJsonQueryNpgsqlTest.Byte_array_mapped_to_json_column(storeType: \"jsonb\")\n  Assert.Equal() Failure: Strings differ\n  Expected: \"Bar\"\n  Actual:   null\n(with the write assertion removed, the read path failed with: System.InvalidOperationException : Invalid token type: 'StartObject'. at JsonCollectionOfStructsReaderWriter`2.FromJsonTyped)\n  total: 2\n  failed: 2"
+    },
+    {
+      "cmd": "dotnet test --project test/EFCore.PG.Tests -c Release --filter-method \"*Json_byte_array*\"   (after fix; also fails 1/3 if the `elementMapping is null` guard is removed)",
+      "result": "pass",
+      "output_tail": "Test run summary: Passed!\n  total: 3\n  failed: 0\n  succeeded: 3"
+    },
+    {
+      "cmd": "dotnet test --project test/EFCore.PG.FunctionalTests -c Release --filter-method \"*Byte_array_mapped_to_json_column*\"   (after fix)",
+      "result": "pass",
+      "output_tail": "Test run summary: Passed!\n  total: 2\n  failed: 0\n  succeeded: 2"
+    },
+    {
+      "cmd": "dotnet test --project test/EFCore.PG.Tests -c Release --no-build --report-xunit-trx",
+      "result": "pass",
+      "output_tail": "passed [+494/x0/?6]\nTest run summary: Passed!\n  total: 500\n  failed: 0\n  succeeded: 494\n  skipped: 6"
+    },
+    {
+      "cmd": "dotnet test --project test/EFCore.PG.FunctionalTests -c Release --no-build --report-xunit-trx   (unfiltered, PostgreSQL 16 + PostGIS)",
+      "result": "fail",
+      "output_tail": "Test run summary: Failed!\n  total: 28724\n  failed: 22\n  succeeded: 28481\n  skipped: 221\n(All 22 are PG17/18-only features on this PG16 server: TemporalConstraintTest x14, MigrationsNpgsqlTest *_without_overlaps/_with_period x5, JsonTranslationsNpgsqlTest.JsonPathExists_* x3; the identical 22 fail on BASE 930bd29 — diff of failure lists empty. CI excludes them via category=failing trait.)"
+    },
+    {
+      "cmd": "dotnet test -c Release --no-build --filter-not-trait category=failing --report-xunit-trx   (exact CI command, whole solution)",
+      "result": "pass",
+      "output_tail": "EFCore.PG.Tests passed [+494/x0/?6]\nEFCore.PG.FunctionalTests passed [+28481/x0/?221]\nTest run summary: Passed!\n  total: 29202\n  failed: 0\n  succeeded: 28975\n  skipped: 227\n  duration: 11m 41s"
+    }
+  ],
+  "pr_title": "Map byte[] to json/jsonb as a raw JSON document again",
+  "pr_summary_en": "Fixes #3698\n\nSince 10.0, a byte[] property mapped to a json/jsonb column was picked up by NpgsqlTypeMappingSource.FindCollectionMapping as a JSON primitive collection of bytes, so it was written as a JSON array of numbers and rows holding real JSON documents (e.g. written by 9.x) failed to materialize with \"Invalid token type: 'StartObject'\". This restores the 9.x behavior: unless an element mapping is explicitly configured (e.g. via PrimitiveCollection()), byte[] on json/jsonb falls back to NpgsqlJsonTypeMapping, which sends the bytes as the raw UTF-8 document as supported by Npgsql. The byte[] -> smallint[] and default bytea mappings are unaffected. Added type mapping unit tests and an ad-hoc functional round-trip test for both json and jsonb.",
+  "risks": "(1) Behavior change for anyone who wrote data with 10.x under this mapping: those rows contain JSON arrays of numbers and will now be read back as the raw bytes of that array text (not the original bytes); this is the inverse of the current 9.x->10.x break and matches the maintainer's classification as an unintentional regression. (2) Pre-existing 9.x quirks of NpgsqlJsonTypeMapping for byte[] are unchanged: GenerateNonNullSqlLiteral sends byte[] through the 'User POCO' branch (JsonSerializer.Serialize -> base64 JSON string), so byte[] constants in SQL literals (e.g. HasData seeding, inlined constants) don't match the parameter path; GenerateCodeLiteral throws for byte[] (compiled model seed data); the default value comparer for byte[] on this mapping may not be structural, so in-place mutation of the array may not be detected (replacing the array works and is tested). Not widened to keep the change minimal. (3) Explicit PrimitiveCollection() on byte[] with jsonb keeps the 10.x collection behavior by design (tested). (4) Functional runs used PostgreSQL 16 locally; PG17/18-only tests were checked to fail identically on BASE.",
+  "thread": {
+    "source": "page",
+    "checked_at": "2026-09-27",
+    "comments_read": 9,
+    "comments_total": 9,
+    "decision": "go",
+    "stop_reason": null,
+    "comments": [
+      "@roji [MEMBER] 2026-01-02 — asks for a minimal repro that worked on 9.0 but not 10",
+      "@aelghoneimy [AUTHOR] 2026-01-03 — links repro repo aelghoneimy/npgsql_bug3698 with 9 vs 10 screenshots",
+      "@brianpursley [CONTRIBUTOR] 2026-02-13 — minimal repro: 9.x stores {\"Foo\": \"Bar\"}, 10.x stores [123, 34, ...]; reading 9.x rows in 10.x throws Invalid token type: 'StartObject'",
+      "@RomainDAROCHA 2026-05-27 — had to change every byte[] to string after moving to .NET 10",
+      "@roji [MEMBER] 2026-05-28 — AI triage: unintentional regression; FindBaseMapping routes json/jsonb CLR mappings through FindCollectionMapping before falling back to NpgsqlJsonTypeMapping; byte[] becomes a primitive collection (breaking-change label added then removed; issue typed Bug)",
+      "@roji [MEMBER] 2026-06-01 — asks users for their use case for byte[] vs string",
+      "@RomainDAROCHA 2026-06-04 — memory-constrained environment; switched to string, not urgent",
+      "@roji [MEMBER] 2026-06-04 — suggests mapping to target type directly; 'I'll try to take a look at fixing this as it's a regression, but it may take a bit of time...'",
+      "@aelghoneimy [AUTHOR] 2026-06-06 — streams raw JSON straight to responses/storage; string+bytes costs extra RAM (roji then added Backlog milestone 2026-06-07)"
+    ],
+    "claims": [
+      {
+        "login": "roji",
+        "date": "2026-06-04",
+        "active": false,
+        "text": "In any case, I'll try to take a look at fixing this as it's a regression, but it may take a bit of time..."
+      }
+    ],
+    "linked_prs": [],
+    "maintainer_guidance": [
+      {
+        "login": "roji",
+        "role": "MEMBER",
+        "date": "2026-05-28",
+        "quote": "This is an unintentional regression in 10.0, not an intentional breaking change.",
+        "kind": "scope",
+        "followed_by": "Restores the 9.x NpgsqlJsonTypeMapping for byte[] on json/jsonb rather than documenting a break"
+      },
+      {
+        "login": "roji",
+        "role": "MEMBER",
+        "date": "2026-05-28",
+        "quote": "NpgsqlTypeMappingSource.FindBaseMapping() routes arbitrary json/jsonb CLR mappings through FindCollectionMapping() before falling back to opaque NpgsqlJsonTypeMapping",
+        "kind": "location",
+        "followed_by": "src/EFCore.PG/Storage/Internal/NpgsqlTypeMappingSource.cs FindCollectionMapping json/jsonb case returns null for byte[] so FindBaseMapping falls back to NpgsqlJsonTypeMapping"
+      },
+      {
+        "login": "roji",
+        "role": "MEMBER",
+        "date": "2026-06-04",
+        "quote": "I'll try to take a look at fixing this as it's a regression, but it may take a bit of time...",
+        "kind": "other",
+        "followed_by": "Treated as a non-active claim: 115 days old (> 60), no assignee/branch/PR, and moved to the Backlog milestone three days later"
+      }
+    ],
+    "community_input_used": [
+      "@brianpursley's repro (write {\"Foo\":\"Bar\"} and check the stored document; read a pre-existing JSON object) shaped AdHocJsonQueryNpgsqlTest.Byte_array_mapped_to_json_column"
+    ]
+  },
+  "failure_reason": null
+}
